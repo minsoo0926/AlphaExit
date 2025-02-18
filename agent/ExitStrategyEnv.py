@@ -7,6 +7,7 @@ class ExitStrategyEnv:
         self.green_zone = (3, 3)
         self.obstacles = [(3, 0), (3, 6)]
         self.players = [1, 2]
+        self.pieces = {1: [], 2: []}  # Define pieces for each player
         self.reset()
 
     def reset(self):

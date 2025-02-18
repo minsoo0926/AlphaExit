@@ -74,10 +74,13 @@ class BoardGame:
             self.column_counts[self.current_player][y] += 1
             self.history.append((np.copy(self.board), self.current_player, self.scores.copy(), self.piece_counter.copy(), self.winner, [[Piece(p.player, p.number, p.x, p.y) for p in pieces] for pieces in self.player_pieces.values()]))
 
+            print(f"Player {self.current_player} placed piece at ({x}, {y})")
+
             if self.piece_counter[1] == 6 and self.piece_counter[2] == 6:
                 self.placement_phase = False  # End placement phase
                 self.reset_board_after_placement()  # Reset tiles after placement phase
                 self.current_player = 1  # Set first turn to Player 1
+                self.ai_move()  # Start AI move after placement phase
             else:
                 self.current_player = 3 - self.current_player  # Switch players
                 self.reset_placement_tiles()
@@ -134,7 +137,10 @@ class BoardGame:
                 if piece.x == start[0] and piece.y == start[1]:
                     piece.x, piece.y = x, y
 
+        print(f"Player {self.current_player} moved piece from {start} to {x, y}")
+
         self.current_player = 3 - self.current_player  # Switch players
+        self.ai_move()  # AI move after each player's move
 
     def check_winner(self):
         if self.scores[1] == 2:
@@ -152,7 +158,7 @@ class BoardGame:
             nx, ny = x, y
             while 0 <= nx + dx < 7 and 0 <= ny + dy < 7:
                 nx, ny = nx + dx, ny + dy
-                if self.board[nx, ny] in [-2, 1, 2]:  # Stop before obstacle or piece
+                if self.board[nx, ny] in [-2, 1, 2]:  # Stop before obstacle or another piece
                     break
                 else:
                     directions.append(((dx, dy), (nx, ny)))
@@ -167,20 +173,21 @@ class BoardGame:
             
 # 게임 UI 및 AI 연동
 class GameApp:
-    def __init__(self, root, ai_enabled=False):
+    def __init__(self, root):
         self.root = root
-        self.ai_enabled = ai_enabled
-        self.agent = QLearningAgent("agent1_q.pkl") if ai_enabled else None
+        self.ai_enabled = True  # Both players are AI
+        self.agent1 = QLearningAgent("q_table_1.pkl")
+        self.agent2 = QLearningAgent("q_table_2.pkl")
 
         self.game = BoardGame()  # 기존 게임 클래스를 활용
         self.canvas = tk.Canvas(root, width=350, height=350, bg="white")
         self.canvas.grid(row=1, column=0, columnspan=3)
-        self.status_label = tk.Label(root, text="Player 1: Place your pieces", font=("Arial", 14))
+        self.status_label = tk.Label(root, text="AI 1: Place your pieces", font=("Arial", 14))
         self.status_label.grid(row=2, column=0, columnspan=3)
         self.reset_button = tk.Button(root, text="Reset", command=self.reset_game)
         self.reset_button.grid(row=3, column=1)
-        self.canvas.bind("<Button-1>", self.click_board)
         self.draw_board()
+        self.ai_move()  # Start AI move on initialization
 
     def draw_board(self):
         """보드 업데이트"""
@@ -205,31 +212,17 @@ class GameApp:
 
     def click_board(self, event):
         """플레이어 클릭 이벤트"""
-        x, y = event.y // 50, event.x // 50
-
-        if self.game.winner:
-            messagebox.showinfo("Game Over", f"Player {self.game.winner} wins!")
-            return
-
-        if self.ai_enabled and self.game.current_player == 2:
-            return  # AI 턴일 때 플레이어 입력 방지
-
-        if self.game.placement_phase:
-            if self.game.is_valid_placement(x, y) and self.game.board[x, y] == 0:
-                self.game.place_piece(x, y)
-                self.draw_board()
-                if not self.game.placement_phase and self.ai_enabled:
-                    self.ai_move()
-        else:
-            self.move_piece(x, y)
+        # Remove player click event handling
+        self.ai_move()
 
     def ai_move(self):
         """AI 자동 움직임"""
-        if not self.ai_enabled:
+        if self.game.winner:
             return
 
         state = np.copy(self.game.board)
-        action = self.agent.get_best_action(state)
+        agent = self.agent1 if self.game.current_player == 1 else self.agent2
+        action = agent.get_best_action(state)
 
         if action:
             if self.game.placement_phase:
@@ -238,8 +231,10 @@ class GameApp:
                 x, y, nx, ny = action
                 self.game.move_piece((x, y), (nx - x, ny - y))
             self.draw_board()
+            self.root.after(1000, self.ai_move)  # Schedule the next AI move after 1 second
 
     def reset_game(self):
         """게임 리셋"""
         self.game = BoardGame()
         self.draw_board()
+        self.ai_move()  # Start AI move after reset
