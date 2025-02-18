@@ -1,3 +1,7 @@
+from ExitStrategyEnv import *
+from QLearningAgent import *
+import pickle
+
 def train_agents(episodes=1000):
     env = ExitStrategyEnv()
     agent1 = QLearningAgent()
@@ -49,4 +53,16 @@ def play_agents(agent1, agent2, episodes=10):
             results['draw'] += 1
 
     return results
+
+
+
+def save_q_table(agent, filename="q_table.pkl"):
+    """학습된 Q-table 저장"""
+    with open(filename, "wb") as f:
+        pickle.dump(agent.q_table, f)
+
+def load_q_table(filename="q_table.pkl"):
+    """저장된 Q-table 불러오기"""
+    with open(filename, "rb") as f:
+        return pickle.load(f)
 
