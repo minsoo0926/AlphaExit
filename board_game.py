@@ -1,4 +1,3 @@
-# board_game.py
 import numpy as np
 from tkinter import messagebox
 
@@ -16,11 +15,11 @@ class BoardGame:
         self.forbidden_rows = [3]
         self.forbidden_cols = [3]
         self.obstacles = [(3, 0), (3, 6)]
-        self.player_pieces = {1: [], 2: []}
+        self.pieces = {1: [], 2: []}  # 기존 player_pieces -> pieces
         self.current_player = 1
         self.placement_phase = True
         self.piece_counter = {1: 0, 2: 0}
-        self.column_counts = {1: [0] * 7, 2: [0] * 7}
+        self.column_counts = {1: [0]*7, 2: [0]*7}
         self.scores = {1: 0, 2: 0}
         self.winner = None
         self.selected_piece = None
@@ -35,6 +34,10 @@ class BoardGame:
         for ox, oy in self.obstacles:
             self.board[ox, oy] = -2
 
+    def get_state(self):
+        """현재 보드 상태를 깊은 복사해서 반환합니다."""
+        return np.copy(self.board)
+
     def is_valid_placement(self, x, y):
         if (x, y) in self.obstacles or (x == 3 or y == 3):
             return False
@@ -46,18 +49,25 @@ class BoardGame:
             return False
         return self.board[x, y] == 0
 
+    def sort_pieces(self):
+        """각 플레이어의 말 목록을 (x, y) 오름차순으로 정렬합니다."""
+        for player in self.pieces:
+            # Piece 객체의 경우, 좌표를 (piece.x, piece.y) 기준으로 정렬
+            self.pieces[player].sort(key=lambda piece: (piece.x, piece.y))
+
     def place_piece(self, x, y):
         if self.is_valid_placement(x, y):
-            piece_number = len(self.player_pieces[self.current_player]) + 1
+            piece_number = len(self.pieces[self.current_player]) + 1
             piece = Piece(self.current_player, piece_number, x, y)
-            self.player_pieces[self.current_player].append(piece)
+            self.pieces[self.current_player].append(piece)
+            self.sort_pieces()  # 말 목록 정렬
             self.board[x, y] = self.current_player
             self.piece_counter[self.current_player] += 1
             self.column_counts[self.current_player][y] += 1
-            self.history.append((self.board.copy(), self.current_player, self.scores.copy(),
+            self.history.append((np.copy(self.board), self.current_player, self.scores.copy(),
                                  self.piece_counter.copy(), self.winner,
-                                 [[Piece(p.player, p.number, p.x, p.y) for p in pieces]
-                                  for pieces in self.player_pieces.values()]))
+                                 [[Piece(p.player, p.number, p.x, p.y) for p in group]
+                                  for group in self.pieces.values()]))
             if self.piece_counter[1] == 6 and self.piece_counter[2] == 6:
                 self.placement_phase = False
                 self.reset_board_after_placement()
@@ -81,7 +91,7 @@ class BoardGame:
             for y in range(7):
                 if (x, y) in self.obstacles or (x == 3 or y == 3):
                     continue
-                if any(piece.x == x and piece.y == y for pieces in self.player_pieces.values() for piece in pieces):
+                if any(piece.x == x and piece.y == y for group in self.pieces.values() for piece in group):
                     continue
                 self.board[x, y] = 0 if self.board[x, y] == -1 else self.board[x, y]
                 if self.is_valid_placement(x, y):
@@ -91,16 +101,16 @@ class BoardGame:
 
     def move_piece(self, start, direction):
         if self.winner:
-            return False
+            return "Game over!"
         x, y = start
         player = self.board[x, y]
         if player != self.current_player:
-            return False
+            return "Not your turn!"
         dx, dy = direction
-        self.history.append((self.board.copy(), self.current_player, self.scores.copy(),
+        self.history.append((np.copy(self.board), self.current_player, self.scores.copy(),
                              self.piece_counter.copy(), self.winner,
-                             [[Piece(p.player, p.number, p.x, p.y) for p in pieces]
-                              for pieces in self.player_pieces.values()]))
+                             [[Piece(p.player, p.number, p.x, p.y) for p in group]
+                              for group in self.pieces.values()]))
         while 0 <= x + dx < 7 and 0 <= y + dy < 7:
             nx, ny = x + dx, y + dy
             if self.board[nx, ny] in [-2, 1, 2]:
@@ -110,13 +120,14 @@ class BoardGame:
         if (x, y) == self.green_zone:
             self.scores[self.current_player] += 1
             self.check_winner()
-            self.player_pieces[self.current_player] = [piece for piece in self.player_pieces[self.current_player]
-                                                         if not (piece.x == start[0] and piece.y == start[1])]
+            self.pieces[self.current_player] = [piece for piece in self.pieces[self.current_player]
+                                                 if not (piece.x == start[0] and piece.y == start[1])]
         else:
             self.board[x, y] = player
-            for piece in self.player_pieces[self.current_player]:
+            for piece in self.pieces[self.current_player]:
                 if piece.x == start[0] and piece.y == start[1]:
                     piece.x, piece.y = x, y
+        self.sort_pieces()  # 이동 후에도 정렬
         self.current_player = 3 - self.current_player
         return True
 
@@ -128,21 +139,26 @@ class BoardGame:
             self.winner = 2
             messagebox.showinfo("Game Over", "Player 2 wins!")
 
-    def get_possible_moves(self, position):
-        x, y = position
-        directions = []
+    def get_valid_moves(self, x, y):
+        """각 방향에서 끝까지 이동한 최종 위치만 반환합니다."""
+        moves = []
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nx, ny = x, y
-            while 0 <= nx + dx < 7 and 0 <= ny + dy < 7:
-                nx, ny = nx + dx, ny + dy
-                if self.board[nx, ny] in [-2, 1, 2]:
+            curr_x, curr_y = x, y
+            while True:
+                next_x = curr_x + dx
+                next_y = curr_y + dy
+                if not (0 <= next_x < 7 and 0 <= next_y < 7):
                     break
-                directions.append(((dx, dy), (nx, ny)))
-        return directions
+                if self.board[next_x, next_y] in [-2, 1, 2]:
+                    break
+                curr_x, curr_y = next_x, next_y
+            if (curr_x, curr_y) != (x, y):
+                moves.append((curr_x, curr_y))
+        return moves
 
     def undo(self):
         if self.history:
             state = self.history.pop()
             self.board, self.current_player, self.scores, self.piece_counter, self.winner, restored_pieces = state
-            self.player_pieces = {1: restored_pieces[0], 2: restored_pieces[1]}
+            self.pieces = {1: restored_pieces[0], 2: restored_pieces[1]}
             self.selected_piece = None

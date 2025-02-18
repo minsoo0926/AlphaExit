@@ -1,4 +1,3 @@
-# rl_agent.py
 import random
 import pickle
 import numpy as np
@@ -14,34 +13,46 @@ class QLearningAgent:
         return self.q_table.get((tuple(state.flatten()), action), 0.0)
 
     def choose_action(self, env):
+        state = env.get_state()
+        # 탐험 확률로 무작위 선택
         if random.random() < self.epsilon:
             if env.placement_phase:
-                valid_actions = [(x, y) for x in range(env.board_size)
-                                 for y in range(env.board_size)
+                valid_actions = [(x, y) for x in range(env.board.shape[0])
+                                 for y in range(env.board.shape[0])
                                  if env.is_valid_placement(x, y)]
-                return random.choice(valid_actions) if valid_actions else None
             else:
                 valid_actions = []
-                for piece in env.player_pieces[env.current_player]:
+                # env.pieces 로 변경 및 Piece 객체의 좌표 접근 (piece.x, piece.y)
+                for piece in env.pieces[env.current_player]:
                     moves = env.get_valid_moves(piece.x, piece.y)
-                    for (_, (nx, ny)) in moves:
+                    for (nx, ny) in moves:
                         valid_actions.append((piece.x, piece.y, nx, ny))
-                return random.choice(valid_actions) if valid_actions else None
+            action = random.choice(valid_actions) if valid_actions else None
+            print(f"[탐험 선택] Player {env.current_player} 행동: {action}")
+            return action
         else:
-            state = env.get_state()
             if env.placement_phase:
-                valid_actions = [(x, y) for x in range(env.board_size)
-                                 for y in range(env.board_size)
+                valid_actions = [(x, y) for x in range(env.board.shape[0])
+                                 for y in range(env.board.shape[0])
                                  if env.is_valid_placement(x, y)]
             else:
                 valid_actions = []
-                for piece in env.player_pieces[env.current_player]:
+                for piece in env.pieces[env.current_player]:
                     moves = env.get_valid_moves(piece.x, piece.y)
-                    for (_, (nx, ny)) in moves:
+                    for (nx, ny) in moves:
                         valid_actions.append((piece.x, piece.y, nx, ny))
             if not valid_actions:
                 return None
-            return max(valid_actions, key=lambda a: self.get_q(state, a))
+            # 모든 유효 행동의 Q값을 계산합니다.
+            q_vals = [self.get_q(state, a) for a in valid_actions]
+            if max(q_vals) == 0:
+                action = random.choice(valid_actions)
+                print(f"[모든 Q값 0 - 랜덤 선택] Player {env.current_player} 행동: {action}")
+                return action
+            else:
+                action = max(valid_actions, key=lambda a: self.get_q(state, a))
+                print(f"[활용 선택] Player {env.current_player} 행동: {action}")
+                return action
 
     def update_q(self, state, action, reward, next_state):
         old_q = self.get_q(state, action)

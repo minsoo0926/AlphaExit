@@ -88,7 +88,7 @@ class GameApp:
                 self.status_label.config(text="먼저 말을 선택하세요")
 
     def ai_move(self):
-        # 현재 턴의 플레이어가 AI인 경우에만 AI가 행동하도록 함
+        # 현재 턴의 플레이어가 AI인 경우만 행동 수행
         agent = None
         if self.game.current_player == 1 and self.agent1 is not None:
             agent = self.agent1
@@ -98,16 +98,24 @@ class GameApp:
             return
 
         state = self.game.board.copy()
+        # 우선 최적 행동을 얻어보고, 없으면 fallback으로 choose_action 사용
         action = agent.get_best_action(state)
+        if action is None:
+            action = agent.choose_action(self.game)
+        
+        # 최종 선택된 행동만 출력
+        print(f"AI 최종 선택: {action}")
+
         if action:
             if self.game.placement_phase:
-                self.game.place_piece(*action)
+                done = self.game.place_piece(*action)
             else:
                 x, y, nx, ny = action
                 direction = (nx - x, ny - y)
-                self.game.move_piece((x, y), direction)
+                done = self.game.move_piece((x, y), direction)
             self.draw_board()
             self.status_label.config(text=f"Player {self.game.current_player} 차례")
+
 
     def check_ai_turn(self):
         # AI 턴이면 자동으로 ai_move를 호출
