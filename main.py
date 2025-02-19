@@ -72,6 +72,7 @@ class TrainingApp:
         if action is None:
             self.env.reset()
             self.current_state = self.env.get_state()
+            done = True
         else:
             reward, done = self.env.step(action)
             next_state = self.env.get_state()
@@ -82,8 +83,15 @@ class TrainingApp:
             agent.update(state, action, reward, opponent_reward, done)
             self.current_state = next_state
 
-        if done or self.env.winner is not None:
+        if self.env.winner is not None:
             opponent.update(np.zeros(51), np.zeros(4), 0, 200, done)
+            self.current_episode += 1
+            self.env.reset()
+            torch.save(self.agent1.model.state_dict(), "agent1_dqn.pth")
+            torch.save(self.agent2.model.state_dict(), "agent2_dqn.pth")
+            self.current_state = self.env.get_state()
+            self.last_actions = {1: None, 2: None}
+        elif done:
             self.current_episode += 1
             self.env.reset()
             torch.save(self.agent1.model.state_dict(), "agent1_dqn.pth")

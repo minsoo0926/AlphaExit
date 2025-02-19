@@ -12,6 +12,8 @@ from collections import deque
 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps")
 
+PENALTY_COEFF=0.5
+
 #####################################
 # 1. 게임 환경 (강화학습 전용)
 #####################################
@@ -160,12 +162,16 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)
+        self.fc3 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc4 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc5 = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        return self.fc3(x)
+        x = F.relu(self.fc3(x))
+        x = F.relu(self.fc4(x))
+        return self.fc5(x)
 
 # 3. DQN 에이전트 (Q-LearningAgent 대체)
 class DQNAgent:
@@ -224,11 +230,12 @@ class DQNAgent:
     def store_experience(self, state, action, reward):
         self.last_experience = (state, action, reward)
 
+
     def update(self, curr_state, curr_action, curr_reward, opponent_reward, done):
         state, action, reward = self.last_experience
 
         if opponent_reward >= 100:
-            reward -= opponent_reward  # 상대가 득점하면 페널티 부여
+            reward -= opponent_reward*PENALTY_COEFF  # 상대가 득점하면 페널티 부여
 
         target_q = reward if done else reward + self.gamma * self.get_q(curr_state, curr_action)
 
@@ -245,7 +252,8 @@ class DQNAgent:
         if self.step_count % 100 == 0:
             self.target_model.load_state_dict(self.model.state_dict())
         
-        self.last_experience = (curr_state, curr_action, curr_reward)  # 경험 초기화
+        # 경험 초기화
+        self.last_experience = (np.zeros(51), np.zeros(4), 0) if done else (curr_state, curr_action, curr_reward) 
 
     def get_max_q(self, env, state):
         valid_actions = self.get_valid_actions(env)
