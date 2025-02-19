@@ -31,7 +31,10 @@ class GameApp:
         self.canvas.delete("all")
         for x in range(7):
             for y in range(7):
-                color = "white"
+                if x == 3 or y == 3:
+                    color = "gray"
+                else:
+                    color = "white"
                 if (x, y) == self.game.green_zone:
                     color = "green"
                 elif self.game.board[x, y] == -1:
@@ -42,6 +45,8 @@ class GameApp:
                     color = "blue"
                 elif self.game.board[x, y] == 2:
                     color = "red"
+                elif x == 3 or y == 3:
+                    color = "gray"
                 self.canvas.create_rectangle(
                     y * 50, x * 50, y * 50 + 50, x * 50 + 50,
                     fill=color, outline="black"

@@ -3,9 +3,7 @@ import os
 import numpy as np
 import random
 import pickle
-import matplotlib.pyplot as plt
 
-plt.ion()  # 인터랙티브 모드 활성화 (실시간 시각화)
 
 #####################################
 # 1. 게임 환경 (강화학습 전용)
@@ -31,7 +29,10 @@ class ExitStrategyEnv:
 
     def get_state(self):
         """현재 보드 상태를 깊은 복사해서 반환"""
-        return np.copy(self.board)
+        board_flat = np.copy(self.board).flatten()
+        # 현재 플레이어 번호를 배열에 추가합니다.
+        state = np.append(board_flat, self.current_player)
+        return state
 
     def is_valid_placement(self, x, y):
         """해당 위치에 말을 배치할 수 있는지 판단"""
@@ -237,7 +238,7 @@ def train_agents(episodes=1000, agent1_epsilon=0.1, agent2_epsilon=0.1):
         print("새로운 Agent2 생성됨.")
 
     rewards = []
-    fig, ax = plt.subplots()
+    last_actions = {1: None, 2: None}
 
     for episode in range(episodes):
         state = env.reset()
@@ -254,6 +255,16 @@ def train_agents(episodes=1000, agent1_epsilon=0.1, agent2_epsilon=0.1):
             reward, done = env.step(action)
             next_state = env.get_state()
             agent.update_q(state, action, reward, next_state)
+            opponent = 3 - current_player
+
+            if reward >= 100 and last_actions[opponent] is not None:
+                opp_state, opp_action = last_actions[opponent]
+                opponent_agent = agent1 if opponent == 1 else agent2
+                penalty = -reward  # 득점 보상과 동일한 크기의 페널티
+                opponent_agent.update_q(opp_state, opp_action, penalty, next_state)
+                last_actions[opponent] = None
+
+            last_actions[current_player] = (state, action)
             state = next_state
             total_reward += reward
 
@@ -262,27 +273,89 @@ def train_agents(episodes=1000, agent1_epsilon=0.1, agent2_epsilon=0.1):
         if (episode + 1) % 100 == 0 or episode == 0:
             winner = env.winner if env.winner is not None else "정보 없음"
             print(f"에피소드 {episode+1}: 총 보상 = {total_reward}, 승자 = {winner}")
-            ax.clear()
-            ax.imshow(env.get_state(), cmap="viridis")
-            ax.set_title(f"에피소드 {episode+1} 최종 보드 상태")
-            plt.pause(0.5)
 
-    plt.ioff()
-    plt.figure()
-    plt.plot(rewards)
-    plt.xlabel("에피소드")
-    plt.ylabel("총 보상")
-    plt.title("에이전트 학습 성능")
-    plt.show()
+    return agent1, agent2, rewards
+
+
+def train_agents_with_opponent_update(episodes=1000, agent1_epsilon=0.1, agent2_epsilon=0.1):
+    env = ExitStrategyEnv()
+
+    # 에이전트 생성 (기존 파일이 있으면 로드)
+    if os.path.exists("agent1_q.pkl"):
+        q_table1 = load_q_table("agent1_q.pkl")
+        agent1 = QLearningAgent(player=1, epsilon=agent1_epsilon, q_table=q_table1)
+        print("Agent1의 Q-table 로드됨.")
+    else:
+        agent1 = QLearningAgent(player=1, epsilon=agent1_epsilon)
+        print("새로운 Agent1 생성됨.")
+
+    if os.path.exists("agent2_q.pkl"):
+        q_table2 = load_q_table("agent2_q.pkl")
+        agent2 = QLearningAgent(player=2, epsilon=agent2_epsilon, q_table=q_table2)
+        print("Agent2의 Q-table 로드됨.")
+    else:
+        agent2 = QLearningAgent(player=2, epsilon=agent2_epsilon)
+        print("새로운 Agent2 생성됨.")
+
+    rewards = []
+    for episode in range(episodes):
+        state = env.reset()
+        done = False
+        total_reward = 0
+        # 각 플레이어의 마지막 state-action-reward를 저장할 딕셔너리 (키: 플레이어 번호)
+        last_state_action = {}
+
+        while not done:
+            current_player = env.current_player
+            agent_current = agent1 if current_player == 1 else agent2
+            state_current = env.get_state()
+            action_current = agent_current.choose_action(env)
+            if action_current is None:
+                done = True
+                break
+            reward, done = env.step(action_current)
+            total_reward += reward
+            new_state = env.get_state()  # 현재 행동에 의해 변경된 상태
+
+            # 상대방의 이전 행동이 있다면, 새 상태(new_state)를 기반으로 Q 업데이트 진행
+            opponent = 3 - current_player
+            if opponent in last_state_action:
+                s_last, a_last, r_last = last_state_action[opponent]
+                opponent_agent = agent1 if opponent == 1 else agent2
+                r_last = r_last - reward if reward >= 100 else r_last
+                opponent_agent.update_q(s_last, a_last, r_last, new_state)
+                # 업데이트 후 상대방의 메모리 초기화
+                del last_state_action[opponent]
+
+            # 현재 플레이어의 state-action-reward를 메모리에 저장 (나중에 상대 행동 후 업데이트)
+            last_state_action[current_player] = (state_current, action_current, reward)
+
+        # 게임 종료 후, 아직 업데이트되지 않은 플레이어의 경험에 대해 최종 상태를 사용하여 업데이트
+        final_state = env.get_state()
+        for player, (s, a, r) in last_state_action.items():
+            agent = agent1 if player == 1 else agent2
+            agent.update_q(s, a, r, final_state)
+        last_state_action = {}
+
+        rewards.append(total_reward)
+        if (episode + 1) % 100 == 0 or episode == 0:
+            winner = env.winner if env.winner is not None else "정보 없음"
+            print(f"에피소드 {episode+1}: 총 보상 = {total_reward}, 승자 = {winner}")
 
     return agent1, agent2, rewards
 
 #####################################
 # 5. 메인 실행: 에이전트 학습 및 결과 저장
 #####################################
+
 if __name__ == "__main__":
-    EPISODES = 1000
-    agent1, agent2, rewards = train_agents(episodes=EPISODES)
-    
-    save_q_table(agent1, "agent1_q.pkl")
-    save_q_table(agent2, "agent2_q.pkl")
+    EPISODES = 100
+    for i in range(EPISODES):
+        agent1, agent2, rewards = train_agents_with_opponent_update(episodes=1)
+        
+        save_q_table(agent1, "agent1_q.pkl")
+        save_q_table(agent2, "agent2_q.pkl")
+
+
+
+
