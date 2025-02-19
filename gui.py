@@ -3,7 +3,10 @@ import tkinter as tk
 from tkinter import messagebox
 import numpy as np
 from board_game import BoardGame
-from rl_agent import QLearningAgent, load_q_table
+from train_module import DQNAgent
+import torch
+
+device = torch.device("cuda" if torch.cuda.is_available() else "mps")
 
 class GameApp:
     def __init__(self, root, player1_ai=False, player2_ai=False):
@@ -11,8 +14,18 @@ class GameApp:
         self.player1_ai = player1_ai
         self.player2_ai = player2_ai
         # AI 플레이어이면 저장된 Q-table을 불러옵니다.
-        self.agent1 = QLearningAgent(q_table=load_q_table("agent1_q.pkl")) if player1_ai else None
-        self.agent2 = QLearningAgent(q_table=load_q_table("agent2_q.pkl")) if player2_ai else None
+        self.agent1 = DQNAgent(player=1) if player1_ai else None
+        self.agent2 = DQNAgent(player=2) if player2_ai else None
+
+        if self.agent1:
+            self.agent1.model.load_state_dict(torch.load("agent1_dqn.pth", weights_only=True))
+            self.agent1.model.eval()
+            print("Loaded agent1_dqn.pth")
+        
+        if self.agent2:
+            self.agent2.model.load_state_dict(torch.load("agent2_dqn.pth", weights_only=True))
+            self.agent2.model.eval()
+            print("Loaded agent2_dqn.pth")
 
         self.game = BoardGame()
         self.canvas = tk.Canvas(root, width=350, height=350, bg="white")
@@ -91,7 +104,9 @@ class GameApp:
                     self.status_label.config(text="이동 불가")
             else:
                 self.status_label.config(text="먼저 말을 선택하세요")
-
+    
+    
+    
     def ai_move(self):
         # 현재 턴의 플레이어가 AI인 경우만 행동 수행
         agent = None
@@ -102,11 +117,25 @@ class GameApp:
         if not agent:
             return
 
-        state = self.game.board.copy()
+        state = self.game.get_state()
         # 우선 최적 행동을 얻어보고, 없으면 fallback으로 choose_action 사용
-        action = agent.get_best_action(state)
-        if action is None:
-            action = agent.choose_action(self.game)
+        q_values = []
+        if self.game.placement_phase:
+            valid_actions = [(x, y) for x in range(7) for y in range(7) 
+                    if self.game.is_valid_placement(x, y)]
+        else:
+            valid_actions = []
+            for piece in self.game.pieces[self.game.current_player]:
+                moves = self.game.get_valid_moves(piece.x, piece.x)
+                valid_actions.extend([(piece.x, piece.y, nx, ny) for (nx, ny) in moves])
+            
+        for action in valid_actions:
+            sa = agent.get_state_action(state, action)
+            sa_tensor = torch.FloatTensor(sa).unsqueeze(0).to(device)  # 데이터를 GPU로 이동
+            with torch.no_grad():
+                q_values.append(agent.model(sa_tensor).item())
+        action = valid_actions[np.argmax(q_values)]
+        
         
         # 최종 선택된 행동만 출력
         print(f"AI 최종 선택: {action}")
@@ -116,7 +145,7 @@ class GameApp:
                 done = self.game.place_piece(*action)
             else:
                 x, y, nx, ny = action
-                direction = (nx - x, ny - y)
+                direction = ((nx - x)//abs(nx-x) if not (nx-x) else 0, (ny - y)//abs(ny-y) if not (ny-y) else 0)
                 done = self.game.move_piece((x, y), direction)
             self.draw_board()
             self.status_label.config(text=f"Player {self.game.current_player} 차례")

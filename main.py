@@ -2,6 +2,7 @@ import tkinter as tk
 from gui import GameApp
 import train_module
 import torch
+import numpy as np
 
 PENALTY_SCALE = 1
 
@@ -16,14 +17,14 @@ class TrainingApp:
         self.agent2 = train_module.DQNAgent(player=2)
          # Load trained models if available
         try:
-            self.agent1.model.load_state_dict(torch.load("agent1_dqn.pth"))
+            self.agent1.model.load_state_dict(torch.load("agent1_dqn.pth", weights_only=True))
             self.agent1.model.eval()
             print("Loaded agent1_dqn.pth")
         except FileNotFoundError:
             print("No saved model for agent1")
         
         try:
-            self.agent2.model.load_state_dict(torch.load("agent2_dqn.pth"))
+            self.agent2.model.load_state_dict(torch.load("agent2_dqn.pth", weights_only=True))
             self.agent2.model.eval()
             print("Loaded agent2_dqn.pth")
         except FileNotFoundError:
@@ -75,30 +76,32 @@ class TrainingApp:
             reward, done = self.env.step(action)
             next_state = self.env.get_state()
             if opponent.last_experience:
-                _, opponent_reward, _ = opponent.last_experience
+                _, _, opponent_reward = opponent.last_experience
             else:
                 opponent_reward = 0.0
-            agent.update(state, action, opponent_reward, done)
+            agent.update(state, action, reward, opponent_reward, done)
             self.current_state = next_state
 
         if done or self.env.winner is not None:
+            opponent.update(np.zeros(51), np.zeros(4), 0, 200, done)
             self.current_episode += 1
             self.env.reset()
+            torch.save(self.agent1.model.state_dict(), "agent1_dqn.pth")
+            torch.save(self.agent2.model.state_dict(), "agent2_dqn.pth")
             self.current_state = self.env.get_state()
             self.last_actions = {1: None, 2: None}
 
         self.draw_board()
         self.info_label.config(text=f"Episode: {self.current_episode}  Current Player: {self.env.current_player}")
         self.root.after(self.training_step_delay, self.train_step)
-        torch.save(self.agent1.model.state_dict(), "agent1_dqn.pth")
-        torch.save(self.agent2.model.state_dict(), "agent2_dqn.pth")
+
 
 
 def start_game(player1_ai, player2_ai):
     game_window = tk.Toplevel()
     game_window.title("Exit Strategy 2")
     if player1_ai and player2_ai:
-        TrainingApp(game_window, episodes=10, training_step_delay=5)
+        TrainingApp(game_window, episodes=100, training_step_delay=1)
     else:
         GameApp(game_window, player1_ai, player2_ai)
 

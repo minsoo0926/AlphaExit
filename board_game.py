@@ -35,8 +35,9 @@ class BoardGame:
             self.board[ox, oy] = -2
 
     def get_state(self):
-        """현재 보드 상태를 깊은 복사해서 반환합니다."""
-        return np.copy(self.board)
+        board_flat = np.copy(self.board).flatten()
+        phase = 1 if self.placement_phase else 0
+        return np.append(board_flat, [self.current_player, phase])
 
     def is_valid_placement(self, x, y):
         if (x, y) in self.obstacles or (x == 3 or y == 3):
@@ -116,12 +117,16 @@ class BoardGame:
             if self.board[nx, ny] in [-2, 1, 2]:
                 break
             x, y = nx, ny
-        self.board[start[0], start[1]] = -1 if start[0] == 3 or start[1] == 3 else 0
+
+        self.board[start[0], start[1]] = 0
+
         if (x, y) == self.green_zone:
             self.scores[self.current_player] += 1
+            self.board[3,3] = 3
+            for piece in self.pieces[self.current_player]:
+                if piece.x == start[0] and piece.y == start[1]:
+                    self.pieces[self.current_player].remove(piece)
             self.check_winner()
-            self.pieces[self.current_player] = [piece for piece in self.pieces[self.current_player]
-                                                 if not (piece.x == start[0] and piece.y == start[1])]
         else:
             self.board[x, y] = player
             for piece in self.pieces[self.current_player]:
