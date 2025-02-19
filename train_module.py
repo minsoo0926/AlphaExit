@@ -3,7 +3,14 @@ import os
 import numpy as np
 import random
 import pickle
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from collections import deque
 
+
+device = torch.device("cuda" if torch.cuda.is_available() else "mps")
 
 #####################################
 # 1. 게임 환경 (강화학습 전용)
@@ -28,12 +35,11 @@ class ExitStrategyEnv:
         return self.get_state()
 
     def get_state(self):
-        """현재 보드 상태를 깊은 복사해서 반환"""
         board_flat = np.copy(self.board).flatten()
-        # 현재 플레이어 번호를 배열에 추가합니다.
-        state = np.append(board_flat, self.current_player)
-        return state
-
+        phase = 1 if self.placement_phase else 0
+        return np.append(board_flat, [self.current_player, phase])
+    
+    
     def is_valid_placement(self, x, y):
         """해당 위치에 말을 배치할 수 있는지 판단"""
         if (x, y) in self.obstacles or (x, y) == self.green_zone:
@@ -199,6 +205,114 @@ class QLearningAgent:
             return max(actions, key=lambda a: self.q_table[(state_tuple, self.player, a)])
         return None
 
+class DQN(nn.Module):
+    def __init__(self, input_dim, hidden_dim=128):
+        super(DQN, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, 1)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
+
+# 3. DQN 에이전트 (Q-LearningAgent 대체)
+class DQNAgent:
+    def __init__(self, player, epsilon=0.1, lr=0.001, gamma=0.9):
+        self.player = player
+        self.epsilon = epsilon
+        self.gamma = gamma
+        self.input_dim = 51 + 4  # 상태(51) + 액션 특성(4)
+        self.model = DQN(self.input_dim).to(device)
+        self.target_model = DQN(self.input_dim).to(device)
+        self.target_model.load_state_dict(self.model.state_dict())
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.memory = deque(maxlen=10000)
+        self.batch_size = 64
+        self.step_count = 0
+        self.last_experience = None  # 마지막 경험 저장
+
+    def get_action_features(self, action):
+        if len(action) == 2:  # 배치 액션
+            return [action[0], action[1], 0, 0]
+        return list(action[:4])  # 이동 액션
+
+    def get_state_action(self, state, action):
+        action_features = self.get_action_features(action)
+        return np.concatenate([state, action_features])
+
+    def choose_action(self, env):
+        state = env.get_state()
+        valid_actions = self.get_valid_actions(env)
+        if not valid_actions:
+            return None
+
+        if random.random() < self.epsilon:
+            return random.choice(valid_actions)
+
+        # 신경망을 통해 최적 액션 선택
+        q_values = []
+        for action in valid_actions:
+            sa = self.get_state_action(state, action)
+            sa_tensor = torch.FloatTensor(sa).unsqueeze(0).to(device)  # 데이터를 GPU로 이동
+            with torch.no_grad():
+                q_values.append(self.model(sa_tensor).item())
+        return valid_actions[np.argmax(q_values)]
+
+    def get_valid_actions(self, env):
+        if env.placement_phase:
+            return [(x, y) for x in range(7) for y in range(7) 
+                    if env.is_valid_placement(x, y)]
+        else:
+            actions = []
+            for (x, y) in env.pieces[env.current_player]:
+                moves = env.get_valid_moves(x, y)
+                actions.extend([(x, y, nx, ny) for (nx, ny) in moves])
+            return actions
+
+    def store_experience(self, state, action, reward):
+        self.last_experience = (state, action, reward)
+
+    def update(self, curr_state, curr_action, opponent_reward, done):
+        if self.last_experience is None:
+            return
+        
+        state, action, reward = self.last_experience
+        if opponent_reward >= 100:
+            reward -= opponent_reward  # 상대가 득점하면 페널티 부여
+
+        target_q = reward if done else reward + self.gamma * self.get_q(curr_state, curr_action)
+
+        sa = self.get_state_action(state, action)
+        sa_tensor = torch.FloatTensor(sa).unsqueeze(0).to(device)
+        target_q_tensor = torch.tensor([[target_q]], device=device, dtype=torch.float32)
+
+        self.optimizer.zero_grad()
+        loss = F.mse_loss(self.model(sa_tensor), target_q_tensor)
+        loss.backward()
+        self.optimizer.step()
+
+        self.step_count += 1
+        if self.step_count % 100 == 0:
+            print("target model updated")
+            self.target_model.load_state_dict(self.model.state_dict())
+        
+        self.last_experience = None  # 경험 초기화
+
+    def get_max_q(self, env, state):
+        valid_actions = self.get_valid_actions(env)
+        if not valid_actions:
+            return 0.0
+        q_values = [self.model(torch.FloatTensor(self.get_state_action(state, a)).to(device)).item() for a in valid_actions]
+        return max(q_values)
+
+    def get_q(self, state, action):
+        if not action:
+            return 0.0
+        q_value = self.model(torch.FloatTensor(self.get_state_action(state, action)).to(device)).item()
+        return q_value
+
 #####################################
 # 3. Q-table 저장/불러오기 함수
 #####################################
@@ -217,6 +331,37 @@ def load_q_table(filename="q_table.pkl"):
 #####################################
 # 4. 에이전트 학습 함수 (Self-Play) 및 시각화
 #####################################
+# 4. 학습 함수 수정
+def train_agents_with_dqn(episodes=1000):
+    env = ExitStrategyEnv()
+    agent1 = DQNAgent(1)
+    agent2 = DQNAgent(2)
+
+    for episode in range(episodes):
+        state = env.reset()
+        done = False
+
+        while not done:
+            for agent in [agent1, agent2]:
+                state = env.get_state()
+                action = agent.choose_action(env)
+                if action is None:
+                    continue
+                reward, done = env.step(action)
+                agent.store_experience(state, action, reward)
+                
+                opponent_agent = agent2 if agent == agent1 else agent1
+                if opponent_agent.last_experience is not None:
+                    opponent_state, opponent_action, opponent_reward = opponent_agent.last_experience
+                else:
+                    opponent_reward = 0
+                    
+                agent.update(state, action, opponent_reward, done)
+        
+        print("model updated")
+        torch.save(agent1.model.state_dict(), "agent1_dqn.pth")
+        torch.save(agent2.model.state_dict(), "agent2_dqn.pth")
+
 def train_agents(episodes=1000, agent1_epsilon=0.1, agent2_epsilon=0.1):
     env = ExitStrategyEnv()
 
@@ -351,11 +496,4 @@ def train_agents_with_opponent_update(episodes=1000, agent1_epsilon=0.1, agent2_
 if __name__ == "__main__":
     EPISODES = 100
     for i in range(EPISODES):
-        agent1, agent2, rewards = train_agents_with_opponent_update(episodes=1)
-        
-        save_q_table(agent1, "agent1_q.pkl")
-        save_q_table(agent2, "agent2_q.pkl")
-
-
-
-
+        train_agents_with_dqn(episodes=1)
