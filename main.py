@@ -15,20 +15,20 @@ class TrainingApp:
         
         self.agent1 = train_module.DQNAgent(player=1)
         self.agent2 = train_module.DQNAgent(player=2)
-         # Load trained models if available
-        try:
-            self.agent1.model.load_state_dict(torch.load("agent1_dqn.pth", weights_only=True))
-            self.agent1.model.eval()
-            print("Loaded agent1_dqn.pth")
-        except FileNotFoundError:
-            print("No saved model for agent1")
+        #  # Load trained models if available
+        # try:
+        #     self.agent1.model.load_state_dict(torch.load("agent1_dqn.pth", weights_only=True))
+        #     self.agent1.model.eval()
+        #     print("Loaded agent1_dqn.pth")
+        # except FileNotFoundError:
+        #     print("No saved model for agent1")
         
-        try:
-            self.agent2.model.load_state_dict(torch.load("agent2_dqn.pth", weights_only=True))
-            self.agent2.model.eval()
-            print("Loaded agent2_dqn.pth")
-        except FileNotFoundError:
-            print("No saved model for agent2")
+        # try:
+        #     self.agent2.model.load_state_dict(torch.load("agent2_dqn.pth", weights_only=True))
+        #     self.agent2.model.eval()
+        #     print("Loaded agent2_dqn.pth")
+        # except FileNotFoundError:
+        #     print("No saved model for agent2")
             
         self.canvas = tk.Canvas(root, width=350, height=350, bg="white")
         self.canvas.grid(row=0, column=0, padx=10, pady=10)
@@ -84,18 +84,19 @@ class TrainingApp:
             self.current_state = next_state
 
         if self.env.winner is not None:
-            opponent.update(np.zeros(51), np.zeros(4), 0, 200, done)
+            print(f'winner: {self.env.winner}')
+            opponent.update(np.zeros(51), np.zeros(4), 0, 1, done)
             self.current_episode += 1
             self.env.reset()
-            torch.save(self.agent1.model.state_dict(), "agent1_dqn.pth")
-            torch.save(self.agent2.model.state_dict(), "agent2_dqn.pth")
+            torch.save(self.agent1.target_model.state_dict(), "agent1_dqn.pth")
+            torch.save(self.agent2.target_model.state_dict(), "agent2_dqn.pth")
             self.current_state = self.env.get_state()
             self.last_actions = {1: None, 2: None}
         elif done:
             self.current_episode += 1
             self.env.reset()
-            torch.save(self.agent1.model.state_dict(), "agent1_dqn.pth")
-            torch.save(self.agent2.model.state_dict(), "agent2_dqn.pth")
+            torch.save(self.agent1.target_model.state_dict(), "agent1_dqn.pth")
+            torch.save(self.agent2.target_model.state_dict(), "agent2_dqn.pth")
             self.current_state = self.env.get_state()
             self.last_actions = {1: None, 2: None}
 

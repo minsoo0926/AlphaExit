@@ -73,7 +73,7 @@ class ExitStrategyEnv:
                 self.placement_phase = False
             self.current_player = 3 - self.current_player  # 턴 교체
             return 0, False
-        return -1, False
+        return -0.01, False
 
     def get_valid_moves(self, x, y):
         """각 방향에서 끝까지 이동한 최종 위치만 반환합니다."""
@@ -118,16 +118,18 @@ class ExitStrategyEnv:
             self.scores[self.current_player] += 1
             self.pieces[self.current_player].remove((nx, ny))
             self.board[3, 3] = 3
-            reward = 100
+            reward = 0.3
             if self.scores[self.current_player] == 2:
+                reward = 1
                 self.winner = self.current_player
                 return reward, True
         elif (3 in [nx, ny]) and (3 not in [x, y]):
-            reward = 10
+            reward = 0.1
         
         elif (3 in [x, y]) and (3 not in [nx, ny]):
-            reward = -10
-        
+            reward = -0.1
+        if reward == 0:
+            reward = -0.05
         self.current_player = 3 - self.current_player
         return reward, False
 
@@ -144,7 +146,6 @@ class ExitStrategyEnv:
             reward, done = self.place_piece(*action)
         else:
             reward, done = self.move_piece(*action)
-            reward = reward if reward != 0 else -1
 
         return reward, done
 
@@ -164,14 +165,22 @@ class DQN(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc5 = nn.Linear(hidden_dim, 1)
+        self.fc5 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc6 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc7 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc8 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc9 = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = F.relu(self.fc3(x))
         x = F.relu(self.fc4(x))
-        return self.fc5(x)
+        x = F.relu(self.fc5(x))
+        x = F.relu(self.fc6(x))
+        x = F.relu(self.fc7(x))
+        x = F.relu(self.fc8(x))
+        return self.fc9(x)
 
 # 3. DQN 에이전트 (Q-LearningAgent 대체)
 class DQNAgent:
@@ -181,6 +190,12 @@ class DQNAgent:
         self.gamma = gamma
         self.input_dim = 51 + 4  # 상태(51) + 액션 특성(4)
         self.model = DQN(self.input_dim).to(device)
+        try:
+            self.model.load_state_dict(torch.load(f"agent{player}_dqn.pth", weights_only=True))
+            self.model.eval()
+            print(f"Loaded agent{player}_dqn.pth")
+        except FileNotFoundError:
+            print(f"No saved model for agent{player}")
         self.target_model = DQN(self.input_dim).to(device)
         self.target_model.load_state_dict(self.model.state_dict())
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
@@ -234,7 +249,7 @@ class DQNAgent:
     def update(self, curr_state, curr_action, curr_reward, opponent_reward, done):
         state, action, reward = self.last_experience
 
-        if opponent_reward >= 100:
+        if opponent_reward >= 0.2:
             reward -= opponent_reward*PENALTY_COEFF  # 상대가 득점하면 페널티 부여
 
         target_q = reward if done else reward + self.gamma * self.get_q(curr_state, curr_action)
@@ -265,7 +280,7 @@ class DQNAgent:
     def get_q(self, state, action):
         if not action:
             return 0.0
-        q_value = self.model(torch.FloatTensor(self.get_state_action(state, action)).to(device)).item()
+        q_value = self.target_model(torch.FloatTensor(self.get_state_action(state, action)).to(device)).item()
         return q_value
 
 
