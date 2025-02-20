@@ -17,16 +17,6 @@ class GameApp:
         self.agent1 = DQNAgent(player=1) if player1_ai else None
         self.agent2 = DQNAgent(player=2) if player2_ai else None
 
-        if self.agent1:
-            self.agent1.model.load_state_dict(torch.load("agent1_dqn.pth", weights_only=True))
-            self.agent1.model.eval()
-            print("Loaded agent1_dqn.pth")
-        
-        if self.agent2:
-            self.agent2.model.load_state_dict(torch.load("agent2_dqn.pth", weights_only=True))
-            self.agent2.model.eval()
-            print("Loaded agent2_dqn.pth")
-
         self.game = BoardGame()
         self.canvas = tk.Canvas(root, width=350, height=350, bg="white")
         self.canvas.grid(row=1, column=0, columnspan=3)
@@ -126,9 +116,9 @@ class GameApp:
         else:
             valid_actions = []
             for piece in self.game.pieces[self.game.current_player]:
-                moves = self.game.get_valid_moves(piece.x, piece.x)
+                moves = self.game.get_valid_moves(piece.x, piece.y)
                 valid_actions.extend([(piece.x, piece.y, nx, ny) for (nx, ny) in moves])
-            
+
         for action in valid_actions:
             sa = agent.get_state_action(state, action)
             sa_tensor = torch.FloatTensor(sa).unsqueeze(0).to(device)  # 데이터를 GPU로 이동
@@ -145,7 +135,7 @@ class GameApp:
                 done = self.game.place_piece(*action)
             else:
                 x, y, nx, ny = action
-                direction = ((nx - x)//abs(nx-x) if not (nx-x) else 0, (ny - y)//abs(ny-y) if not (ny-y) else 0)
+                direction = (np.sign(nx - x), np.sign(ny - y))
                 done = self.game.move_piece((x, y), direction)
             self.draw_board()
             self.status_label.config(text=f"Player {self.game.current_player} 차례")

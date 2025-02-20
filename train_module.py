@@ -129,7 +129,7 @@ class ExitStrategyEnv:
         elif (3 in [x, y]) and (3 not in [nx, ny]):
             reward = -0.1
         if reward == 0:
-            reward = -0.05
+            reward = 0
         self.current_player = 3 - self.current_player
         return reward, False
 
@@ -159,28 +159,24 @@ class ExitStrategyEnv:
 # 2. Q-Learning 에이전트 (플레이어 인식 포함)
 #####################################
 class DQN(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128):
+    def __init__(self, input_dim, hidden_dim=256):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc5 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc6 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc7 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc8 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc9 = nn.Linear(hidden_dim, 1)
+        self.fc5 = nn.Linear(hidden_dim, 1)
+        self.dropout = nn.Dropout(0.2)  # 20% 확률로 뉴런 비활성화
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        x = F.relu(self.fc5(x))
-        x = F.relu(self.fc6(x))
-        x = F.relu(self.fc7(x))
-        x = F.relu(self.fc8(x))
-        return self.fc9(x)
+        x = F.leaky_relu(self.fc1(x), negative_slope=0.01)
+        x = self.dropout(x)  # Dropout 적용
+        x = F.leaky_relu(self.fc2(x), negative_slope=0.01)
+        x = self.dropout(x)  
+        x = F.leaky_relu(self.fc3(x))
+        x = self.dropout(x)  
+        x = F.leaky_relu(self.fc4(x))
+        return self.fc5(x)
 
 # 3. DQN 에이전트 (Q-LearningAgent 대체)
 class DQNAgent:
@@ -192,7 +188,6 @@ class DQNAgent:
         self.model = DQN(self.input_dim).to(device)
         try:
             self.model.load_state_dict(torch.load(f"agent{player}_dqn.pth", weights_only=True))
-            self.model.eval()
             print(f"Loaded agent{player}_dqn.pth")
         except FileNotFoundError:
             print(f"No saved model for agent{player}")
@@ -219,7 +214,7 @@ class DQNAgent:
         if not valid_actions:
             return None
 
-        if random.random() < self.epsilon:
+        if env.placement_phase or random.random() < self.epsilon:
             return random.choice(valid_actions)
 
         # 신경망을 통해 최적 액션 선택
@@ -264,9 +259,10 @@ class DQNAgent:
         self.optimizer.step()
 
         self.step_count += 1
-        if self.step_count % 100 == 0:
+        if self.step_count % 10 == 0:
             self.target_model.load_state_dict(self.model.state_dict())
         
+ 
         # 경험 초기화
         self.last_experience = (np.zeros(51), np.zeros(4), 0) if done else (curr_state, curr_action, curr_reward) 
 
