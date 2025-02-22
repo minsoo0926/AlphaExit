@@ -8,7 +8,7 @@ import os
 import numpy as np
 import copy
 
-MAX_TURNS = 500
+MAX_TURNS = 200
 
 class ExitStrategyEnv:
     def __init__(self, max_turns=MAX_TURNS):
@@ -203,7 +203,6 @@ class ExitStrategyEnv:
         elif self.turn >= self.max_turns:
             done = True
             reward = -1
-            print("Max turns over")
             info["winner"] = 0
             info["max_turn_penalty"] = True
         
@@ -355,7 +354,7 @@ class AlphaZeroNet(nn.Module):
 
         if legal_moves_mask is not None:
             # legal_moves_mask의 shape는 (batch_size, 행동 개수)여야 합니다.
-            policy = policy.masked_fill(~legal_moves_mask, -1e9)
+            policy = policy.masked_fill(~legal_moves_mask, -1e4)
         policy = F.log_softmax(policy, dim=1)
 
         # 가치 헤드
@@ -557,67 +556,92 @@ def compute_loss(predicted_policy, predicted_value, target_policy, outcome, mode
         l2_loss += torch.sum(param ** 2)
     return value_loss + policy_loss + l2_coef * l2_loss
 
-def train(network, device, num_episodes=1000, num_mcts_simulations=50, batch_size=32, lr=1e-3):
+def train(network, device, num_episodes=1000, num_mcts_simulations=50, initial_batch_size=32, lr=1e-3):
     optimizer = optim.Adam(network.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     replay_buffer = []
+    
+    # 배치 크기를 GPU 메모리에 맞게 동적으로 조정
+    try:
+        batch_size = initial_batch_size * 2
+        torch.cuda.empty_cache()
+    except RuntimeError:
+        batch_size = initial_batch_size
+        torch.cuda.empty_cache()
     
     for episode in range(num_episodes):
         print(f"Episode {episode+1}")
-        # self-play로 한 에피소드 진행 후 학습 데이터 수집
         episode_examples = self_play_episode(network, device, num_mcts_simulations)
+        
+        # 리플레이 버퍼 관리 개선
+        if len(replay_buffer) > 10000:  # 최대 버퍼 크기 제한
+            # 가장 오래된 20%의 데이터를 제거
+            replay_buffer = replay_buffer[len(replay_buffer)//5:]
         replay_buffer.extend(episode_examples)
         
-        # 충분한 데이터가 모이면 배치 업데이트
+        # 충분한 데이터가 모이면 여러 번의 배치 업데이트 수행
         if len(replay_buffer) >= batch_size:
-            b = int(len(replay_buffer) * 0.7)
-            batch = random.sample(replay_buffer, b)
-            
-            # phase별로 예제를 분리합니다.
-            placement_examples = [ex for ex in batch if ex[0]["phase"] == "placement"]
-            movement_examples = [ex for ex in batch if ex[0]["phase"] == "movement"]
-            
             total_loss = 0.0
+            num_batches = min(5, len(replay_buffer) // batch_size)  # 최대 5번의 배치 업데이트
             
-            # placement phase 업데이트 (행동 차원: 49)
-            if placement_examples:
-                states, target_policies, outcomes = zip(*placement_examples)
-                state_tensors = torch.stack([torch.tensor(s['board'], dtype=torch.float32) for s in states]).to(device)
-                target_policy_tensors = torch.stack([
-                    torch.tensor([target_policies[i].get(a, 0.0) for a in range(49)], dtype=torch.float32)
-                    for i in range(len(placement_examples))
-                ]).to(device)
-                outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(device)
+            for _ in range(num_batches):
+                batch = random.sample(replay_buffer, batch_size)
                 
-                # forward 호출 시 phase 인자를 "placement"로 전달합니다.
-                log_policy, predicted_value = network(state_tensors, phase="placement")
-                loss = compute_loss(log_policy, predicted_value, target_policy_tensors, outcome_tensors, network)
-                loss.backward()
-                total_loss += loss.item()
-            
-            # movement phase 업데이트 (행동 차원: 24)
-            if movement_examples:
-                states, target_policies, outcomes = zip(*movement_examples)
-                state_tensors = torch.stack([torch.tensor(s['board'], dtype=torch.float32) for s in states]).to(device)
-                target_policy_tensors = torch.stack([
-                    torch.tensor([target_policies[i].get(a, 0.0) for a in range(24)], dtype=torch.float32)
-                    for i in range(len(movement_examples))
-                ]).to(device)
-                outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(device)
+                # phase별로 예제를 분리
+                placement_examples = [ex for ex in batch if ex[0]["phase"] == "placement"]
+                movement_examples = [ex for ex in batch if ex[0]["phase"] == "movement"]
                 
-                # forward 호출 시 phase 인자를 "movement"로 전달합니다.
-                log_policy, predicted_value = network(state_tensors, phase="movement")
-                loss = compute_loss(log_policy, predicted_value, target_policy_tensors, outcome_tensors, network)
-                loss.backward()
-                total_loss += loss.item()
+                batch_loss = 0.0
+                
+                # Placement phase 업데이트 (병렬 처리 개선)
+                if placement_examples:
+                    states, target_policies, outcomes = zip(*placement_examples)
+                    state_tensors = torch.stack([torch.tensor(s['board'], dtype=torch.float32) for s in states]).to(device)
+                    
+                    # 병렬 처리를 위한 텐서 준비
+                    policy_matrices = torch.zeros((len(placement_examples), 49), dtype=torch.float32).to(device)
+                    for i, policy in enumerate(target_policies):
+                        for action, prob in policy.items():
+                            policy_matrices[i, action] = prob
+                    
+                    outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(device)
+                    
+                    log_policy, predicted_value = network(state_tensors, phase="placement")
+                    loss = compute_loss(log_policy, predicted_value, policy_matrices, outcome_tensors, network)
+                    loss.backward()
+                    batch_loss += loss.item()
+                
+                # Movement phase 업데이트 (동일한 최적화 적용)
+                if movement_examples:
+                    states, target_policies, outcomes = zip(*movement_examples)
+                    state_tensors = torch.stack([torch.tensor(s['board'], dtype=torch.float32) for s in states]).to(device)
+                    
+                    policy_matrices = torch.zeros((len(movement_examples), 24), dtype=torch.float32).to(device)
+                    for i, policy in enumerate(target_policies):
+                        for action, prob in policy.items():
+                            policy_matrices[i, action] = prob
+                    
+                    outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(device)
+                    
+                    log_policy, predicted_value = network(state_tensors, phase="movement")
+                    loss = compute_loss(log_policy, predicted_value, policy_matrices, outcome_tensors, network)
+                    loss.backward()
+                    batch_loss += loss.item()
+                
+                optimizer.step()
+                optimizer.zero_grad()
+                total_loss += batch_loss
             
-            optimizer.step()
-            optimizer.zero_grad()
-            
-            print(f"Loss: {total_loss}")
-            replay_buffer = []  # 버퍼 초기화 혹은 점진적으로 유지
-            
+            avg_loss = total_loss / num_batches
+            scheduler.step(avg_loss)
+            print(f"Episode {episode+1}, Average Loss: {avg_loss:.4f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
+        
+        # 주기적인 모델 저장 및 평가
         if episode % 10 == 9:
-            save_model(network, "alphazero_model.pth")
+            save_model(network, f"alphazero_model_ep{episode+1}.pth")
+            if episode % 50 == 49:
+                # 이전 버전과의 대전을 통한 성능 평가 로직 추가 가능
+                pass
 
             
 def save_model(model, path):

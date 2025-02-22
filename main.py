@@ -4,189 +4,248 @@ import numpy as np
 import random
 import copy
 import os
-import AlphaExitNet  # AlphaExitNet.py 파일의 모듈
+import threading
+from queue import Queue
+import AlphaExitNet
 
-# 장치 설정
-device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+model = 'cuda' if torch.cuda.is_available() else 'mps'
 
-class AlphaTrainingApp:
-    def __init__(self, root, batch_size=32, training_step_delay=1000):
+class GPUOptimizedAlphaTrainingApp:
+    def __init__(self, root, batch_size=128, training_step_delay=1):
         self.root = root
-        self.training_step_delay = training_step_delay  # 밀리초 단위 지연
+        self.training_step_delay = training_step_delay
         self.batch_size = batch_size
-
+        
+        # GPU 관련 설정
+        self.device = torch.device("cuda")
+        torch.backends.cudnn.benchmark = True  # CUDNN 최적화
+        
         # 환경과 네트워크 초기화
         self.env = AlphaExitNet.ExitStrategyEnv()
-        self.network = AlphaExitNet.AlphaZeroNet(board_size=7, in_channels=2, num_res_blocks=3, num_filters=64)
-        self.network.to(device)
+        self.network = AlphaExitNet.AlphaZeroNet(
+            board_size=7,
+            in_channels=2,
+            num_res_blocks=3,  # 기존과 동일하게 유지
+            num_filters=64     # 기존과 동일하게 유지
+        )
+        self.network.to(self.device)
         if os.path.exists("alphazero_model.pth"):
-            AlphaExitNet.load_model(self.network, "alphazero_model.pth", device)
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=1e-3)
-
-        # 학습 데이터 저장용 변수
+            AlphaExitNet.load_model(self.network, "alphazero_model.pth", self.device)
+        
+        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=2e-4)
+        
+        # 학습 데이터 관련 변수
         self.replay_buffer = []
-        self.episode_data = []  # 현재 에피소드에서 수집한 (state, mcts_policy, player, reward) 튜플
+        self.episode_data = []
         self.episode_count = 0
-
-        # GUI 구성요소 (캔버스, 레이블 등)
+        self.max_replay_buffer_size = 10000  # 메모리 관리를 위한 최대 버퍼 크기
+        
+        # MCTS 관련 설정
+        self.num_simulations = 100  # GPU에서는 더 많은 시뮬레이션 가능
+        self.temperature = 1.0  # 초기 탐험 온도
+        
+        # GUI 구성요소
         self.canvas = tk.Canvas(root, width=350, height=350, bg="white")
         self.canvas.grid(row=0, column=0, padx=10, pady=10)
         self.info_label = tk.Label(root, text="Episode: 0", font=("Arial", 14))
         self.info_label.grid(row=1, column=0)
         self.loss_label = tk.Label(root, text="Loss: N/A", font=("Arial", 12))
         self.loss_label.grid(row=2, column=0)
-
-        # 에피소드 시작
+        self.phase_label = tk.Label(root, text="Phase: placement", font=("Arial", 12))
+        self.phase_label.grid(row=3, column=0)
+        
+        # 상태 업데이트를 위한 큐
+        self.state_queue = Queue()
+        
+        # 초기 상태 설정
         self.current_state = self.env.reset()
-        self.train_episode()
+        self.start_training_thread()
+        self.update_gui()
 
     def draw_board(self):
-        """현재 환경의 보드 상태를 캔버스에 그립니다."""
+        """기존 보드 시각화 로직 유지"""
         self.canvas.delete("all")
-        board = self.env.board  # shape: (2, board_size, board_size)
+        board = self.env.board
         board_size = self.env.board_size
         cell_size = 50
+        
         for x in range(board_size):
             for y in range(board_size):
-                # 기본 색상: 중앙 행/열는 회색, 중앙(3,3)은 녹색
                 color = "gray" if (x == 3 or y == 3) else "white"
                 if (x, y) == (3, 3):
                     color = "green"
-                # 채널 0에 있는 말: 현재 플레이어의 말
                 if board[0, x, y] == 2:
                     color = "black"
                 elif board[0, x, y] == 1:
                     color = 'blue' if self.env.current_player == 1 else 'red'
-                # 채널 1에 있는 말: 상대방의 말
                 elif board[1, x, y] == 1:
                     color = 'red' if self.env.current_player == 1 else 'blue'
                 elif (x * board_size + y) not in self.env.get_legal_moves_placement() and self.env.phase == 'placement':
                     color = "gray"
+                    
                 self.canvas.create_rectangle(
                     y * cell_size, x * cell_size,
                     y * cell_size + cell_size, x * cell_size + cell_size,
                     fill=color, outline="black"
                 )
 
-    def train_episode(self):
-        """한 에피소드를 self-play로 진행합니다."""
-        self.episode_data = []
-        self.current_state = self.env.reset()
-        self.run_step()
-        
+    def update_gui(self):
+        """GUI 업데이트 처리"""
+        try:
+            while not self.state_queue.empty():
+                state, episode_count, loss, phase = self.state_queue.get_nowait()
+                self.current_state = state
+                self.draw_board()
+                self.info_label.config(text=f"Episode: {episode_count}")
+                if loss is not None:
+                    self.loss_label.config(text=f"Loss: {loss:.4f}")
+                self.phase_label.config(text=f"Phase: {phase}")
+        except:
+            pass
+        finally:
+            self.root.after(self.training_step_delay, self.update_gui)
 
-    def run_step(self):
-        """에피소드 내 한 스텝을 진행한 후 GUI를 업데이트합니다."""
-        state = self.current_state
-
-        # 현재 phase에 따른 legal moves mask 계산
+    def run_mcts(self, state):
+        """GPU에 최적화된 MCTS 실행"""
         legal_moves_mask = AlphaExitNet.get_legal_moves_mask(state, self.env)
-        # 신경망 예측 및 초기 정책 (log policy → 확률 변환)
-        initial_policy, _ = AlphaExitNet.neural_net_fn(state, self.network, device, legal_moves_mask)
+        with torch.no_grad():
+            initial_policy, _ = AlphaExitNet.neural_net_fn(state, self.network, self.device, legal_moves_mask)
         
         root_node = AlphaExitNet.Node(state, prior=1.0)
         root_node.expand(initial_policy, AlphaExitNet.next_state_func)
-        # MCTS search (속도 향상을 위해 시뮬레이션 횟수 낮춤)
+        
         action_probs = AlphaExitNet.mcts_search(
             root_node,
-            lambda s: AlphaExitNet.neural_net_fn(s, self.network, device, AlphaExitNet.get_legal_moves_mask(s, self.env)),
-            num_simulations=15,
+            lambda s: AlphaExitNet.neural_net_fn(s, self.network, self.device, AlphaExitNet.get_legal_moves_mask(s, self.env)),
+            num_simulations=self.num_simulations,
             c_puct=1.0,
             next_state_func=AlphaExitNet.next_state_func,
             is_terminal_func=AlphaExitNet.is_terminal_func
         )
-        # 확률에 따라 행동 선택
-        # action_probs = initial_policy
+        return action_probs
 
-        actions = list(action_probs.keys())
-        probs = np.array([action_probs[a] for a in actions])
-        probs = probs / np.sum(probs) if np.sum(probs) > 0 else np.ones_like(probs) / len(probs)
-        action = np.random.choice(actions, p=probs)
+    def train_network(self, batch):
+        """GPU에 최적화된 네트워크 학습"""
+        total_loss = 0
+        self.optimizer.zero_grad()
+        
+        # Placement phase
+        placement_examples = [ex for ex in batch if ex[0]["phase"] == "placement"]
+        if placement_examples:
+            states, policies, outcomes = zip(*placement_examples)
+            state_tensors = torch.stack([
+                torch.tensor(s['board'], dtype=torch.float32) 
+                for s in states
+            ]).to(self.device)
+            policy_tensors = torch.stack([
+                torch.tensor([policies[i].get(a, 0.0) for a in range(49)], dtype=torch.float32)
+                for i in range(len(placement_examples))
+            ]).to(self.device)
+            outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(self.device)
+            
+            log_policy, predicted_value = self.network(state_tensors, phase="placement")
+            loss = AlphaExitNet.compute_loss(log_policy, predicted_value, policy_tensors, outcome_tensors, self.network)
+            loss.backward()
+            total_loss += loss.item()
 
-        # 행동 적용 및 결과 업데이트
-        next_state, reward, done, info = self.env.step(action)
-        self.episode_data.append((copy.deepcopy(state), action_probs, state["current_player"], reward, info))
-        self.current_state = next_state
+        # Movement phase
+        movement_examples = [ex for ex in batch if ex[0]["phase"] == "movement"]
+        if movement_examples:
+            states, policies, outcomes = zip(*movement_examples)
+            state_tensors = torch.stack([
+                torch.tensor(s['board'], dtype=torch.float32) 
+                for s in states
+            ]).to(self.device)
+            policy_tensors = torch.stack([
+                torch.tensor([policies[i].get(a, 0.0) for a in range(24)], dtype=torch.float32)
+                for i in range(len(movement_examples))
+            ]).to(self.device)
+            outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(self.device)
+            
+            log_policy, predicted_value = self.network(state_tensors, phase="movement")
+            loss = AlphaExitNet.compute_loss(log_policy, predicted_value, policy_tensors, outcome_tensors, self.network)
+            loss.backward()
+            total_loss += loss.item()
 
-        # 보드 및 정보 업데이트
-        self.draw_board()
-        self.info_label.config(text=f"Episode: {self.episode_count}  Phase: {state['phase']}")
+        self.optimizer.step()
+        return total_loss
 
-        if done:
-            # 에피소드 종료 시 학습 데이터 처리 및 네트워크 업데이트
+    def training_loop(self):
+        """별도 스레드에서 실행되는 학습 루프"""
+        while True:
+            state = self.env.reset()
+            self.episode_data = []
+            
+            while True:
+                action_probs = self.run_mcts(state)
+                
+                # 행동 선택 (temperature 적용)
+                actions = list(action_probs.keys())
+                probs = np.array([action_probs[a] for a in actions])
+                if self.episode_count < 500:  # 초기에는 더 많은 탐험
+                    probs = probs ** (1 / self.temperature)
+                probs = probs / np.sum(probs)
+                action = np.random.choice(actions, p=probs)
+                
+                next_state, reward, done, info = self.env.step(action)
+                self.episode_data.append((
+                    copy.deepcopy(state),
+                    action_probs,
+                    state["current_player"],
+                    reward,
+                    info
+                ))
+                
+                # GUI 업데이트를 위한 상태 전송
+                self.state_queue.put((next_state, self.episode_count, None, state["phase"]))
+                
+                if done:
+                    break
+                state = next_state
+            
+            # 에피소드 종료 후 처리
             self.episode_count += 1
             self.process_episode()
-        else:
-            # 다음 스텝 진행 (지연 후 호출)
-            self.root.after(self.training_step_delay, self.run_step)
+            
+            # 모델 저장
+            if self.episode_count % 10 == 0:
+                AlphaExitNet.save_model(self.network, "alphazero_model.pth")
+                
+            # Temperature 조정
+            if self.episode_count % 100 == 0:
+                self.temperature = max(0.1, self.temperature * 0.95)
 
     def process_episode(self):
-        """한 에피소드 종료 후 누적 리턴 계산 및 배치 업데이트를 진행합니다."""
+        """에피소드 데이터 처리 및 학습"""
+        # 누적 보상 계산
         cumulative_return = 0.0
-        episode_examples = []
-        gamma = 1.0  # 감쇠 계수 (여기서는 단순 합산)
+        gamma = 1.0
         penalty = -1.0
+        
         for (s, mcts_policy, player, r, info) in reversed(self.episode_data):
             if info.get("max_turn_penalty", False):
                 cumulative_return = r + penalty + gamma * cumulative_return
             else:
                 cumulative_return = r + gamma * cumulative_return
-            episode_examples.insert(0, (s, mcts_policy, cumulative_return))
-        self.replay_buffer.extend(episode_examples)
-
-        loss_val = None
-        # 배치 사이즈 이상이면 업데이트 진행
+            self.replay_buffer.insert(0, (s, mcts_policy, cumulative_return))
+        
+        # 버퍼 크기 제한
+        if len(self.replay_buffer) > self.max_replay_buffer_size:
+            self.replay_buffer = self.replay_buffer[-self.max_replay_buffer_size:]
+        
+        # 배치 학습
         if len(self.replay_buffer) >= self.batch_size:
-            batch_size = int(len(self.replay_buffer) * 0.5)
-            batch = random.sample(self.replay_buffer, batch_size)
-            total_loss = 0.0
+            batch = random.sample(self.replay_buffer, self.batch_size)
+            loss = self.train_network(batch)
+            self.state_queue.put((self.current_state, self.episode_count, loss, self.env.phase))
 
-            # placement phase 예제 업데이트 (행동 차원: 49)
-            placement_examples = [ex for ex in batch if ex[0]["phase"] == "placement"]
-            if placement_examples:
-                states, target_policies, outcomes = zip(*placement_examples)
-                state_tensors = torch.stack([torch.tensor(s['board'], dtype=torch.float32) for s in states]).to(device)
-                target_policy_tensors = torch.stack([
-                    torch.tensor([target_policies[i].get(a, 0.0) for a in range(49)], dtype=torch.float32)
-                    for i in range(len(placement_examples))
-                ]).to(device)
-                outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(device)
-                log_policy, predicted_value = self.network(state_tensors, phase="placement")
-                loss = AlphaExitNet.compute_loss(log_policy, predicted_value, target_policy_tensors, outcome_tensors, self.network)
-                loss.backward()
-                total_loss += loss.item()
-
-            # movement phase 예제 업데이트 (행동 차원: 24)
-            movement_examples = [ex for ex in batch if ex[0]["phase"] == "movement"]
-            if movement_examples:
-                states, target_policies, outcomes = zip(*movement_examples)
-                state_tensors = torch.stack([torch.tensor(s['board'], dtype=torch.float32) for s in states]).to(device)
-                target_policy_tensors = torch.stack([
-                    torch.tensor([target_policies[i].get(a, 0.0) for a in range(24)], dtype=torch.float32)
-                    for i in range(len(movement_examples))
-                ]).to(device)
-                outcome_tensors = torch.tensor(outcomes, dtype=torch.float32).view(-1, 1).to(device)
-                log_policy, predicted_value = self.network(state_tensors, phase="movement")
-                loss = AlphaExitNet.compute_loss(log_policy, predicted_value, target_policy_tensors, outcome_tensors, self.network)
-                loss.backward()
-                total_loss += loss.item()
-
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            loss_val = total_loss
-            self.replay_buffer = []  # 버퍼 초기화
-
-        if self.episode_count % 5 == 4:
-            AlphaExitNet.save_model(self.network, "alphazero_model.pth")
-
-        if loss_val is not None:
-            self.loss_label.config(text=f"Loss: {loss_val:.4f}")
-
-        # 다음 에피소드를 일정 지연 후 시작
-        self.root.after(self.training_step_delay, self.train_episode)
+    def start_training_thread(self):
+        """학습 스레드 시작"""
+        training_thread = threading.Thread(target=self.training_loop, daemon=True)
+        training_thread.start()
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("AlphaExitNet Training GUI")
-    app = AlphaTrainingApp(root, batch_size=32, training_step_delay=1)
+    root.title("AlphaExitNet GPU Training")
+    app = GPUOptimizedAlphaTrainingApp(root)
     root.mainloop()
