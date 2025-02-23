@@ -118,7 +118,7 @@ class GPUOptimizedAlphaTrainingApp:
             root_node,
             lambda s: AlphaExitNet.neural_net_fn(s, self.network, self.device, AlphaExitNet.get_legal_moves_mask(s, self.env)),
             num_simulations=self.num_simulations,
-            c_puct=5.0,
+            c_puct=1.0,
             next_state_func=AlphaExitNet.next_state_func,
             is_terminal_func=AlphaExitNet.is_terminal_func
         )

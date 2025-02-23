@@ -387,7 +387,7 @@ class Node:
         for action, prior in action_priors.items():
             if action not in self.children:
                 new_state, immediate_reward = next_state_func(self.state, action)
-                self.children[action] = Node(new_state, prior, immediate_reward)
+                self.children[action] = Node(new_state, prior, immediate_reward/10) # /10
 
     def update(self, value):
         self.N += 1
