@@ -17,7 +17,7 @@ class GPUOptimizedAlphaTrainingApp:
         self.batch_size = batch_size
         
         # GPU 관련 설정
-        self.device = torch.device("cuda")
+        self.device = torch.device(model)
         torch.backends.cudnn.benchmark = True  # CUDNN 최적화
         
         # 환경과 네트워크 초기화
