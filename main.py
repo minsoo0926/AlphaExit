@@ -219,7 +219,7 @@ class GPUOptimizedAlphaTrainingApp:
         """에피소드 데이터 처리 및 학습"""
         # 누적 보상 계산
         cumulative_return = 0.0
-        gamma = 1.0
+        gamma = 0.9
         penalty = -1.0
         
         for (s, mcts_policy, player, r, info) in reversed(self.episode_data):
