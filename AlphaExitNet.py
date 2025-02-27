@@ -184,6 +184,7 @@ class ExitStrategyEnv:
         
         if new_i == 3 and new_j == 3:
             self.scores[self.current_player] += 1
+            # print(f'score +1:{self.current_player}')
             reward = 1
         else:
             self.board[0, new_i, new_j] = 1
@@ -199,7 +200,6 @@ class ExitStrategyEnv:
             done = True
             reward = 10
             info["winner"] = self.current_player
-            print(f'winner:{self.current_player}')
         elif self.turn >= self.max_turns:
             done = True
             reward = -1
