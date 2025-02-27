@@ -394,7 +394,7 @@ class Node:
         self.W += value
         self.Q = self.W / self.N
 
-def mcts_search(root, neural_net, num_simulations, c_puct, next_state_func, is_terminal_func, gamma = 1.0):
+def mcts_search(root, neural_net, num_simulations, c_puct, next_state_func, is_terminal_func, gamma = 0.9):
     """
     root: 초기 Node
     neural_net: 함수, state를 입력받아 (policy dict, value) 반환
@@ -491,7 +491,7 @@ def get_legal_moves_mask(state, env):
         mask[legal_moves] = True
     return mask
 
-def self_play_episode(network, device, num_mcts_simulations=50, gamma=1.0):
+def self_play_episode(network, device, num_mcts_simulations=50, gamma=0.9):
     env = ExitStrategyEnv()
     state = env.reset()
     done = False
